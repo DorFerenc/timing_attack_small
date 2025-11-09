@@ -24,20 +24,11 @@ The script supports **multi-threaded measurement**, **median timing analysis**, 
 - Python 3.8 or newer
 - `requests` package
 
-Install dependencies:
-
-```bash
-pip install requests
-```
-
 ---
-
-## 🐳 Running the Vulnerable Server (Docker)
-
 
 ## 🚀 Quick Start
 
-1. **Terminal 1: Start the Server**
+1. **Terminal 1: Start the Server 🐳**
 ```powershell
 .\docker.bat
 ```
