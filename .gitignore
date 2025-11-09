@@ -36,6 +36,10 @@ Thumbs.db
 *.sublime-project
 *.sublime-workspace
 
+# claude
+.claude/
+*.claude
+
 # Python caches and reports
 *.coverage
 coverage.xml
