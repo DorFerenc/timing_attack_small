@@ -1,0 +1,81 @@
+# ==============================
+# Python / Flask / Timing Attack Project
+# ==============================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+.ENV/
+env.bak/
+
+# Build / distribution artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Logs and runtime files
+*.log
+*.out
+*.tmp
+*.bak
+*.swp
+
+# OS / IDE specific files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Python caches and reports
+*.coverage
+coverage.xml
+htmlcov/
+.cache/
+.pytest_cache/
+.tox/
+.mypy_cache/
+
+# Attack run outputs (summaries, results, etc.)
+attack_runs/
+run_summary_*.txt
+run_summary_*.json
+
+# Temporary or local test files
+test_*.py
+temp_*.py
+sandbox/
+scratch/
+
+# Jupyter / notebook checkpoints
+.ipynb_checkpoints/
+
+# Environment / config files
+.env
+*.env
+.env.*
+
+# System backups
+*.bak
+*.old
+
+# Reports, PDFs, datasets (local use only)
+*.csv
+*.xlsx
+*.xls
+*.pdf
+*.ods
+*.odt
+
+# Ignore your uploaded assignment files
+Atks on Impls RUNI E02 - Temporal I.pdf
+Homework Assignment 1 - Temporal Side-Channel.pdf

